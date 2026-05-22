@@ -7,25 +7,41 @@ A lightweight, standalone emoji picker for Neovim written in Lua.
 ## Features
 
 - 🚀 Fast and lightweight (zero dependencies).
-- 🔍 Real-time filtering/search.
-- 🎨 Modern floating window UI.
+- 🔍 Real-time filtering/search (search by name or category).
+- 🎨 Modern grid-based floating window UI.
+- 💡 Dynamic tooltips showing emoji names on hover.
 - ⌨️ Insert emojis directly into your buffer.
+- 🛠️ Customizable window dimensions and grid layout.
 
 ## Installation
 
 Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
-{ "ginkohub/emojit.nvim" }
+{
+  "ginkohub/emojit.nvim",
+  opts = {
+    columns = 10, -- Number of emojis per row
+    width = 50,   -- Window width
+    height = 20,  -- Window height
+  }
+}
 ```
 
 Using [packer.nvim](https://github.com/wbthomason/packer.nvim):
 
 ```lua
-use "ginkohub/emojit.nvim"
+use {
+  "ginkohub/emojit.nvim",
+  config = function()
+    require("emojit").setup({
+      columns = 10,
+      width = 50,
+      height = 20,
+    })
+  end,
+}
 ```
-
-*Note: The command `:Emojit` is registered automatically. You only need to call `setup()` if you want to pass configuration (currently optional).*
 
 ## Usage
 
@@ -35,11 +51,26 @@ Run the command `:Emojit` to open the picker.
 
 - `i` (Insert Mode):
   - `<CR>`: Select and insert the emoji.
-  - `<C-n>`: Move selection down.
-  - `<C-p>`: Move selection up.
+  - `<C-n>`: Move down.
+  - `<C-p>`: Move up.
+  - `<C-f>`: Move right.
+  - `<C-b>`: Move left.
   - `<Esc>`: Close the picker.
 - `n` (Normal Mode):
   - `q` or `<Esc>`: Close the picker.
+  - `<CR>`: Select and insert.
+
+## Configuration
+
+Default settings:
+
+```lua
+require("emojit").setup({
+  columns = 8,
+  width = 42,
+  height = 15,
+})
+```
 
 ## Configuration
 

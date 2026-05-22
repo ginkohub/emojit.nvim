@@ -1,47 +1,45 @@
 local data = require("emojit.data")
 local M = {}
 
+local config = {
+  columns = 10,
+  width = 42,
+  height = 15,
+}
+
+local state = {
+  is_open = false,
+  layout = nil,
+  origin_win = nil,
+}
+
 local function create_window_layout()
-  local ui = vim.api.nvim_list_uis()[1]
-  local width = 42 -- Wide enough for ~10 emojis per row
-  local height = 15
+  local uis = vim.api.nvim_list_uis()
+  if #uis == 0 then return nil end
+  local ui = uis[1]
+  local width = config.width
+  local height = config.height
   local row = (ui.height - height) / 2
   local col = (ui.width - width) / 2
 
-  -- Results buffer and window
+  -- Results buffer and window (Main Grid)
   local res_buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_option(res_buf, "filetype", "emojit")
+  vim.api.nvim_set_option_value("filetype", "emojit", { buf = res_buf })
   local res_opts = {
     relative = "editor",
     width = width,
-    height = height - 5,
-    col = col,
-    row = row + 3,
-    style = "minimal",
-    border = "rounded",
-    title = " Results ",
-    title_pos = "center",
-  }
-  local res_win = vim.api.nvim_open_win(res_buf, false, res_opts)
-  vim.api.nvim_win_set_option(res_win, "cursorline", true)
-
-  -- Input buffer and window
-  local input_buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_option(input_buf, "filetype", "emojit")
-  local input_opts = {
-    relative = "editor",
-    width = width,
-    height = 1,
+    height = height - 2,
     col = col,
     row = row,
     style = "minimal",
     border = "rounded",
-    title = " Search Emoji ",
+    title = " Emojit ",
     title_pos = "center",
   }
-  local input_win = vim.api.nvim_open_win(input_buf, true, input_opts)
+  local res_win = vim.api.nvim_open_win(res_buf, true, res_opts)
+  vim.api.nvim_set_option_value("cursorline", true, { win = res_win })
 
-  -- Footer buffer and window (Action hints)
+  -- Footer window (Tooltips only)
   local footer_buf = vim.api.nvim_create_buf(false, true)
   local footer_opts = {
     relative = "editor",
@@ -53,12 +51,9 @@ local function create_window_layout()
     border = "rounded",
   }
   local footer_win = vim.api.nvim_open_win(footer_buf, false, footer_opts)
-  vim.api.nvim_buf_set_lines(footer_buf, 0, -1, false, { " <Enter> Select | <Esc> Close " })
-  vim.api.nvim_win_set_option(footer_win, "winhl", "Normal:Comment")
+  vim.api.nvim_set_option_value("winhl", "Normal:Comment", { win = footer_win })
 
   return {
-    input_buf = input_buf,
-    input_win = input_win,
     res_buf = res_buf,
     res_win = res_win,
     footer_buf = footer_buf,
@@ -66,149 +61,167 @@ local function create_window_layout()
   }
 end
 
-local function filter_emojis(query)
-  if query == "" then
-    return data.emojis
-  end
-
-  local results = {}
-  query = query:lower()
-  for _, emoji in ipairs(data.emojis) do
-    if emoji.name:lower():find(query, 1, true) then
-      table.insert(results, emoji)
+local function get_current_idx(res_win, columns)
+  local cursor = vim.api.nvim_win_get_cursor(res_win)
+  local row = cursor[1]
+  local byte_col = cursor[2]
+  
+  local line_idx = (row - 1) * columns
+  local current_byte = 0
+  local col_idx = 0
+  
+  for i = 1, columns do
+    local emoji_idx = line_idx + i
+    local emoji = data.emojis[emoji_idx]
+    if not emoji then break end
+    
+    local cell_start = current_byte
+    local cell_end = current_byte + 1 + #emoji.char + 1
+    
+    if byte_col >= cell_start and byte_col < cell_end then
+      col_idx = i
+      break
     end
+    current_byte = cell_end
   end
-  return results
+  
+  if col_idx == 0 then return nil end
+  return line_idx + col_idx
 end
 
 function M.open()
-  local layout = create_window_layout()
-  local current_results = data.emojis
+  if state.is_open then return end
 
-  local columns = 8
+  state.origin_win = vim.api.nvim_get_current_win()
+  state.layout = create_window_layout()
+  if not state.layout then
+    vim.notify("emojit: cannot open in headless mode", vim.log.levels.WARN)
+    return
+  end
+
+  state.is_open = true
+  local columns = config.columns
+
+  local function update_footer(text)
+    text = text or " Select emojis (Esc/q to close)"
+    vim.api.nvim_buf_set_lines(state.layout.footer_buf, 0, -1, false, { " " .. text })
+  end
+
   local function update_display()
     local lines = {}
-    if #current_results == 0 then
-      lines = { "  No results found" }
-    else
-      local current_line = ""
-      for i, emoji in ipairs(current_results) do
-        current_line = current_line .. string.format(" %s ", emoji.char)
-        if i % columns == 0 then
-          table.insert(lines, current_line)
-          current_line = ""
-        end
-      end
-      if current_line ~= "" then
+    local current_line = ""
+    for i, emoji in ipairs(data.emojis) do
+      current_line = current_line .. string.format(" %s ", emoji.char)
+      if i % columns == 0 then
         table.insert(lines, current_line)
+        current_line = ""
       end
     end
+    if current_line ~= "" then table.insert(lines, current_line) end
 
-    vim.api.nvim_buf_set_option(layout.res_buf, "modifiable", true)
-    vim.api.nvim_buf_set_lines(layout.res_buf, 0, -1, false, lines)
-    vim.api.nvim_buf_set_option(layout.res_buf, "modifiable", false)
-
-    if #current_results > 0 then
-      -- Position cursor on the first emoji character (index 1 after the leading space at 0)
-      vim.api.nvim_win_set_cursor(layout.res_win, { 1, 1 })
-    end
+    vim.api.nvim_set_option_value("modifiable", true, { buf = state.layout.res_buf })
+    vim.api.nvim_buf_set_lines(state.layout.res_buf, 0, -1, false, lines)
+    vim.api.nvim_set_option_value("modifiable", false, { buf = state.layout.res_buf })
+    vim.api.nvim_win_set_cursor(state.layout.res_win, { 1, 1 })
   end
 
   update_display()
+  update_footer()
 
-  -- Input handling
-  vim.api.nvim_buf_attach(layout.input_buf, false, {
-    on_lines = function()
-      vim.schedule(function()
-        if not vim.api.nvim_buf_is_valid(layout.input_buf) then
-          return
-        end
-        local query = vim.api.nvim_buf_get_lines(layout.input_buf, 0, 1, false)[1] or ""
-        current_results = filter_emojis(query)
-        update_display()
-      end)
+  local function close_all()
+    state.is_open = false
+    if vim.api.nvim_win_is_valid(state.layout.res_win) then
+      vim.api.nvim_win_close(state.layout.res_win, true)
+    end
+    if vim.api.nvim_win_is_valid(state.layout.footer_win) then
+      vim.api.nvim_win_close(state.layout.footer_win, true)
+    end
+  end
+
+  local function insert_emoji()
+    local idx = get_current_idx(state.layout.res_win, columns)
+    local emoji = idx and data.emojis[idx]
+
+    if emoji and vim.api.nvim_win_is_valid(state.origin_win) then
+      local r, c = unpack(vim.api.nvim_win_get_cursor(state.origin_win))
+      local buf = vim.api.nvim_win_get_buf(state.origin_win)
+      vim.api.nvim_buf_set_text(buf, r - 1, c, r - 1, c, { emoji.char })
+      -- Move cursor after inserted emoji in origin window
+      vim.api.nvim_win_set_cursor(state.origin_win, { r, c + #emoji.char })
+    end
+  end
+
+  -- Tooltip on move
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    buffer = state.layout.res_buf,
+    callback = function()
+      local idx = get_current_idx(state.layout.res_win, columns)
+      local emoji = idx and data.emojis[idx]
+      if emoji then
+        update_footer(emoji.name)
+      else
+        update_footer()
+      end
     end,
   })
 
-  local function close_all()
-    if vim.api.nvim_win_is_valid(layout.input_win) then
-      vim.api.nvim_win_close(layout.input_win, true)
-    end
-    if vim.api.nvim_win_is_valid(layout.res_win) then
-      vim.api.nvim_win_close(layout.res_win, true)
-    end
-    if vim.api.nvim_win_is_valid(layout.footer_win) then
-      vim.api.nvim_win_close(layout.footer_win, true)
-    end
-  end
+  -- Keymaps
+  local opts = { noremap = true, silent = true, buffer = state.layout.res_buf }
+  vim.keymap.set("n", "<CR>", insert_emoji, opts)
+  vim.keymap.set("n", "q", close_all, opts)
+  vim.keymap.set("n", "<Esc>", close_all, opts)
+  
+  -- Mouse support
+  vim.keymap.set("n", "<LeftRelease>", function()
+    -- Small delay to let the cursor settle on the click position
+    vim.schedule(insert_emoji)
+  end, opts)
 
-  local function select_emoji()
-    if #current_results == 0 then
-      close_all()
-      return
-    end
-
-    local cursor = vim.api.nvim_win_get_cursor(layout.res_win)
-    local row = cursor[1]
-    local col = math.floor(cursor[2] / 4) + 1
-    local idx = (row - 1) * columns + col
-    local emoji = current_results[idx]
-
-    close_all()
-
-    if emoji then
-      local r, c = unpack(vim.api.nvim_win_get_cursor(0))
-      vim.api.nvim_buf_set_text(0, r - 1, c, r - 1, c, { emoji.char })
-      vim.api.nvim_win_set_cursor(0, { r, c + #emoji.char })
-    end
-  end
-
-  -- Keymaps for input window
-  local input_map_opts = { noremap = true, silent = true, buffer = layout.input_buf }
-  vim.keymap.set("i", "<Esc>", close_all, input_map_opts)
-  vim.keymap.set("i", "<CR>", select_emoji, input_map_opts)
-
+  -- Grid Navigation (Normal mode)
   local function move_cursor(dr, dc)
-    local cur = vim.api.nvim_win_get_cursor(layout.res_win)
-    local r, c = cur[1], cur[2]
-    local new_r = r + dr
-    local new_c = c + (dc * 4)
-
-    local lines = vim.api.nvim_buf_get_lines(layout.res_buf, 0, -1, false)
-    local line_count = #lines
+    local cur = vim.api.nvim_win_get_cursor(state.layout.res_win)
+    local row = cur[1]
+    local current_idx = get_current_idx(state.layout.res_win, columns)
+    if not current_idx then return end
     
-    if new_r >= 1 and new_r <= line_count then
-      local line = lines[new_r]
-      -- Ensure we don't move past the end of the line
-      -- Each emoji cell " 😀 " is 4 bytes. 
-      if new_c >= 1 and new_c < #line then
-        vim.api.nvim_win_set_cursor(layout.res_win, { new_r, new_c })
-      end
+    local current_col = ((current_idx - 1) % columns) + 1
+    local new_row = row + dr
+    local new_col = current_col + dc
+    
+    if new_row < 1 then new_row = 1 end
+    local total_rows = math.ceil(#data.emojis / columns)
+    if new_row > total_rows then new_row = total_rows end
+    if new_col < 1 then new_col = 1 end
+    if new_col > columns then new_col = columns end
+    
+    local new_idx = (new_row - 1) * columns + new_col
+    if new_idx > #data.emojis then
+      new_idx = #data.emojis
+      new_row = math.ceil(new_idx / columns)
+      new_col = ((new_idx - 1) % columns) + 1
     end
+    
+    local new_byte_offset = 0
+    local row_start_idx = (new_row - 1) * columns
+    for i = 1, new_col - 1 do
+      local e = data.emojis[row_start_idx + i]
+      new_byte_offset = new_byte_offset + 1 + #e.char + 1
+    end
+    new_byte_offset = new_byte_offset + 1
+    vim.api.nvim_win_set_cursor(state.layout.res_win, { new_row, new_byte_offset })
   end
 
-  vim.keymap.set("i", "<C-n>", function() move_cursor(1, 0) end, input_map_opts)
-  vim.keymap.set("i", "<C-p>", function() move_cursor(-1, 0) end, input_map_opts)
-  vim.keymap.set("i", "<C-f>", function() move_cursor(0, 1) end, input_map_opts)
-  vim.keymap.set("i", "<C-b>", function() move_cursor(0, -1) end, input_map_opts)
-
-  -- Normal mode keymaps for both windows
-  local function set_common_maps(buf)
-    local m_opts = { noremap = true, silent = true, buffer = buf }
-    vim.keymap.set("n", "q", close_all, m_opts)
-    vim.keymap.set("n", "<Esc>", close_all, m_opts)
-    vim.keymap.set("n", "<CR>", select_emoji, m_opts)
-  end
-
-  set_common_maps(layout.input_buf)
-  set_common_maps(layout.res_buf)
-
-  -- Start in insert mode
-  vim.cmd("startinsert")
+  vim.keymap.set("n", "j", function() move_cursor(1, 0) end, opts)
+  vim.keymap.set("n", "k", function() move_cursor(-1, 0) end, opts)
+  vim.keymap.set("n", "l", function() move_cursor(0, 1) end, opts)
+  vim.keymap.set("n", "h", function() move_cursor(0, -1) end, opts)
 end
 
 function M.setup(opts)
-  -- Configuration can be handled here in the future
+  opts = opts or {}
+  config.columns = opts.columns or config.columns
+  config.width = opts.width or config.width
+  config.height = opts.height or config.height
 end
 
 return M
